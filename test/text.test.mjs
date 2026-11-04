@@ -544,3 +544,35 @@ test('requestedModeOf 只认已知模式名', () => {
 	assert.equal(requestedModeOf({}), '')
 	assert.equal(requestedModeOf(null), '')
 })
+
+test('第一张卡（门先问一次）也要有权限、理由、目标、影响', () => {
+	// 同一个 callId 的第一张卡来自审批门，reason 是门的中文块；提权模板只在第二张卡上。
+	// 但 tool/call 事件在第一次审批之前就已写入会话（实测索引 42 < 43），
+	// 所以工具参数里的 sandbox_permissions / justification 这时也拿得到。
+	const args = {
+		file_path: 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
+		sandbox_permissions: 'danger-full-access',
+		justification: '给插件打点定位短路径问题。'
+	}
+	const reason = [
+		'操作：修改',
+		'路径：C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
+		'目标：工作区外',
+		'影响：整机（工作区外任意路径可读写，含系统位置；改动不可自动回滚）',
+		'原因：目标含工作区外路径 1 处：C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs'
+	].join('\n')
+	const zh = applySummaryText({ toolName: 'edit', callId: 'c', reason }, { args, cwd: 'D:\\ws', env: process.env })
+	const lines = zh.split(DISPLAY_BREAK)
+	// 权限行与影响行重复时只留影响（第十一轮的决定），所以这里断言「两行里至少留一行」。
+	assert.ok(lines.some((l) => l.startsWith('权限：') || l.startsWith('影响：')), zh)
+	assert.ok(zh.includes('理由：给插件打点定位短路径问题。'), zh)
+	assert.ok(lines.some((l) => l.startsWith('目标：工作区外')), zh)
+	assert.ok(lines.some((l) => l.startsWith('影响：整机')), zh)
+	assert.ok(!/^操作：|^路径：/m.test(zh), zh)
+})
+
+test('门的字段清单比 300 字长时也要保留（正文才该按长度丢）', () => {
+	const long = `目标：工作区外\n影响：整机（${'很长的说明'.repeat(80)}）`
+	assert.equal(shouldAppendReason(long, '对 x 进行写入'), true)
+	assert.equal(shouldAppendReason('很长的一段正文'.repeat(100), '对 x 进行写入'), false)
+})

@@ -743,11 +743,14 @@ export function splitHostTemplate(text) {
  */
 export function shouldAppendReason(text, summary) {
 	const reason = String(text ?? '').trim()
-	if (reason === '' || reason.length > 300) return false
+	if (reason === '') return false
 	// 提权模板（`escalate sandbox to <mode>: <justification>`）是机器英文文本，
 	// 中文卡片上没意义；justification 已经进了总结。
 	if (/^escalate sandbox to /i.test(reason)) return false
 	if (reason === summary) return false
+	// 多行块是门的字段清单（目标/拦截/影响/原因），行数多不代表是正文；
+	// 只有单行才用长度判断「这是不是被误当成理由的一段文章」。
+	if (!reason.includes('\n') && reason.length > 300) return false
 	return true
 }
 
@@ -871,13 +874,23 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 	const multiLine = text.includes('\n')
 	const kept = []
 	for (const line of text.split('\n')) {
-		const head = unescapeBackslashes(line.trim())
+		let head = unescapeBackslashes(line.trim())
 		if (head === '') continue
 		if (/^(?:操作|路径)[：:]/.test(head)) continue
 		// 门把命令也记一行，但它是按换行截断的：多行脚本只剩 `$paths = @(` 这种开场白，
 		// 首行已经写清操作和目标，这半句话只会在卡片上添噪声。
 		if (/^命令[：:]/.test(head) && isTruncatedCommand(head.replace(/^命令[：:]\s*/, ''))) continue
-		const list = GATE_PATH_LIST_RE.exec(head)
+		// `原因：目标含工作区外路径 N 处：…` 只是给清单套了个标签，拆掉标签走同一套去重逻辑。
+		let prefix = ''
+		let list = GATE_PATH_LIST_RE.exec(head)
+		if (list === null && /^原因[：:]/.test(head)) {
+			const inner = head.replace(/^原因[：:]\s*/, '')
+			const innerList = GATE_PATH_LIST_RE.exec(inner)
+			if (innerList !== null) {
+				list = innerList
+				prefix = '原因：'
+			}
+		}
 		if (list === null) {
 			// 单行理由（`目标含工作区外路径 1 处`、`判定器不可用`）整句保留 —— 它就是转人工的
 			// 全部依据。多行块里偶尔混进文件正文或脚本片段（门抽目标时把内容一起带了出来），
@@ -915,21 +928,23 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 		const realCount = items.length + dupCount
 		// 首行列的条数已不少于门报的处数：这句统计不再包含任何新信息，纯占版面。
 		const covered = Number.isFinite(total) && total > 0 && shownList.length >= total
+		// `原因：` 只是同一份清单的另一种标签；首行已写全时它不提供新信息，整句省掉。
+		const redundant = prefix !== '' && covered
 		if (items.length === 0) {
 			if (dupCount > 0) {
 				// 单目标形态仍要点明「就是上面那个」；多目标形态下首行已列全，直接省掉。
-				if (!covered || shownList.length <= 1) kept.push(`${label} ${count} 处（就是上面那个）`)
+				if (!redundant && (!covered || shownList.length <= 1)) kept.push(`${prefix}${label} ${count} 处（就是上面那个）`)
 			} else if (!covered) {
 				// 列出的全是噪声（正则片段、被盘符规则误伤的东西），但「门确实报了 N 处」要留住，
 				// 否则卡片看起来像什么都没发生。
-				kept.push(`${label} ${count} 处`)
+				kept.push(`${prefix}${label} ${count} 处`)
 			}
 		} else {
 			const head2 = realCount === total ? `${label} ${count} 处` : `${label} ${items.length} 处`
 			const shownItems = items.slice(0, 5)
 			const more = items.length > shownItems.length ? ` 等 ${items.length} 处` : ''
 			const same = dupCount > 0 ? `（另有 ${dupCount} 处同上）` : ''
-			kept.push(`${head2}：${shownItems.join('、')}${more}${same}`)
+			if (!redundant) kept.push(`${prefix}${head2}：${shownItems.join('、')}${more}${same}`)
 		}
 		for (const chunk of trailing) {
 			if (chunk === '' || !GATE_FIELD_RE.test(chunk)) continue
@@ -1126,9 +1141,10 @@ export function applySummaryText(req, facts) {
 		// `shouldAppendReason` 会把整条 `escalate …` 判为不必附加，于是理由就凭空消失了。
 		parts.push(`理由：${justification}`)
 	}
-	// `reason` 不是提权模板，而是审批门换上的中文块：那是它独有的判断依据
-	// （目标/拦截/原因），宿主给了 `displayReason` 也不能把它挤掉。
-	if (escalation.mode === '' && justification === '') {
+	// `reason` 既可能是提权模板，也可能是审批门换上的中文块（目标/拦截/影响/原因）。
+	// 后者是门独有的判断依据：只要里面还有没写过的字段就附加，不能因为
+	// 「这次已经有理由行」就整块丢掉 —— 那正是第一张卡缺目标/影响的原因。
+	{
 		const downstream = trimDownstreamReason(rawReason, shownTargets, facts?.cwd ?? '')
 		if (shouldAppendReason(downstream, summary)) {
 			// 门会把模型写的那句理由也记成 `原因：…`，与上面的 `理由：…` 一字不差；
