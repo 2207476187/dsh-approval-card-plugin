@@ -600,3 +600,39 @@ test('同一请求被问第二次时，不能因为已有总结就丢掉权限�
 	// 首行只能出现一次
 	assert.equal(lines.filter((l) => l.startsWith('对 ')).length, 1, second)
 })
+
+test('宿主把命令正文塞进模板尾部时，不当理由显示', () => {
+	// 真机 13:48:55：卡片「理由：」后面是一整段 here-string 脚本。
+	const script = "$new = @'\nconst cacheKey = String(req.callId ?? '')\n'@"
+	const req = {
+		toolName: 'pwsh',
+		reason: '目标含工作区外路径 1 处：C:\\x\\index.mjs',
+		displayReason: {
+			en: `Allow this operation with danger-full-access permissions: ${script}`,
+			zh: `允许本次操作使用 danger-full-access 权限：${script}`
+		}
+	}
+	const zh = applySummaryText(req, {
+		args: { command: "Set-Content -LiteralPath 'C:\\x\\index.mjs' -Value y" },
+		cwd: 'D:\\ws'
+	})
+	assert.ok(zh.includes('理由：（宿主没提供可读理由）'), zh)
+	assert.ok(!zh.includes('cacheKey'), zh)
+})
+
+test('模型写的那句理由优先于宿主模板尾部', () => {
+	const req = {
+		toolName: 'pwsh',
+		reason: '目标含工作区外路径 1 处：C:\\x\\a.txt',
+		displayReason: { en: 'x', zh: '允许本次操作使用 danger-full-access 权限：模板里的旧句子' }
+	}
+	const zh = applySummaryText(req, {
+		args: {
+			command: "Set-Content -LiteralPath 'C:\\x\\a.txt' -Value y",
+			justification: '模型写的理由'
+		},
+		cwd: 'D:\\ws'
+	})
+	assert.ok(zh.includes('理由：模型写的理由'), zh)
+	assert.ok(!zh.includes('模板里的旧句子'), zh)
+})

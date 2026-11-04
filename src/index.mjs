@@ -14,6 +14,19 @@ const LOG_LIMIT = 512 * 1024
 const LOG_KEEP_LINES = 200
 /** callId → 已经流到本插件的审批请求数；只用来给重复卡片编号，不参与任何判断。 */
 const seenAsks = new Map()
+
+/** 每个 callId 最近一次算出的完整文案：第二张卡算不出新行时用它兜底。 */
+const lastFull = new Map()
+
+function rememberFull(cacheKey, text) {
+	lastFull.set(cacheKey, text)
+	if (lastFull.size <= SEEN_LIMIT) return
+	for (const stale of lastFull.keys()) {
+		if (lastFull.size <= SEEN_LIMIT) break
+		if (stale === cacheKey) continue
+		lastFull.delete(stale)
+	}
+}
 /** 计数表上限；长会话里 callId 只增不减，超出就丢最早的。 */
 const SEEN_LIMIT = 256
 
@@ -139,6 +152,15 @@ export default {
 					// 一次调用可能被问两次（审批门放行 → 工具再要更大权限）：第二张卡明确写出
 					// 自己是第几个，否则两张文案不同的卡看起来像两件不相干的事。
 					// 本次没改写（文案已经合规、或上游已经写过）时也有卡要显示，同样标序号。
+					const cacheKey = String(req.callId ?? '')
+					if (zh !== '') rememberFull(cacheKey, zh)
+					else {
+						// 第二张卡（沙箱提权）拿不到工具参数、门的 reason 又被换成中文块时，
+						// 这一趟算不出任何新行 —— 用同一 callId 上一趟写过的完整文案兜底，
+						// 否则第二张卡会退化成只剩首行加一个序号。
+						const cached = lastFull.get(cacheKey)
+						if (cached !== undefined) zh = cached
+					}
 					const base = zh !== ''
 						? zh
 						: (typeof req.displayReason?.zh === 'string' ? req.displayReason.zh : '')

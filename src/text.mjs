@@ -726,6 +726,21 @@ export function requestedModeOf(args) {
  * @param {unknown} text 展示文案原文。
  * @returns {string|null} 模板里的理由；不是模板或没有理由时为 null。
  */
+/**
+ * 那一段到底是不是人话。
+ * 宿主把命令正文塞进 justification 槽时（真机见过：理由是半截 here-string），
+ * 直接照搬会把整段脚本摊到卡片上 —— 既读不懂，也把操作内容泄漏成噪音。
+ */
+function looksLikeCode(value) {
+	const text = String(value ?? '').trim()
+	if (text === '') return false
+	if (text.includes('\n')) return true
+	if (text.length > 200) return true
+	if (/^[([{`$]/.test(text)) return true
+	if (/@'|'@|\$\{|\$[a-z]\.|Set-Content|Write-Host|Select-String|function\s|=>|\|\s/.test(text)) return true
+	return false
+}
+
 export function splitHostTemplate(text) {
 	const match = /^允许本次操作使用\s*.+?\s*权限[：:]\s*([\s\S]*)$/.exec(String(text ?? '').trim())
 	if (match === null) return null
@@ -1135,14 +1150,29 @@ export function applySummaryText(req, facts) {
 	if (hasZh) {
 		// 宿主模板：「允许本次操作使用 <mode> 权限：<理由>」—— 模式已由权限行表达，
 		// 只留理由，别再让同一句话出现两遍。
+		// 但那段话不可信：真机上见过宿主把命令正文塞进这个槽，卡片于是显示半截脚本。
+		// 取值顺序改成「模型写的那句 → 模板尾部」，两者都要先过 looksLikeCode。
 		const fromTemplate = splitHostTemplate(rawZh)
-		if (fromTemplate !== null) parts.push(`理由：${localizeSandboxModes(fromTemplate)}`)
-		else {
+		if (fromTemplate === null) {
+			// 没有提权模板可拆：宿主给的这段本身就是成品（可能多行）。整段照搬，
+			// 不要拿 looksLikeCode 卡它 —— 那张卡本来就有多行。
 			const localized = localizeSandboxModes(rawZh)
 			if (localized.trim() !== '') parts.push(localized)
+		} else {
+			const candidates = [justification, fromTemplate].filter(
+				(value) => typeof value === 'string' && value.trim() !== ''
+			)
+			const readable = candidates.find((value) => !looksLikeCode(value))
+			if (readable !== undefined) parts.push(`理由：${localizeSandboxModes(readable)}`)
+			else if (candidates.length > 0) parts.push('理由：（宿主没提供可读理由）')
 		}
 	}
-	if (justification !== '' && !parts.some((line) => line.startsWith('理由：')) && !rawZh.includes('理由：')) {
+	if (
+		justification !== '' &&
+		!looksLikeCode(justification) &&
+		!parts.some((line) => line.startsWith('理由：')) &&
+		!rawZh.includes('理由：')
+	) {
 		// 宿主提权模板只出现在 `reason` 里（没有 displayReason）：`escalate sandbox to
 		// <mode>: <理由>` 的机器英文前缀不该上卡片，但后面那句模型写的理由必须留下 ——
 		// `shouldAppendReason` 会把整条 `escalate …` 判为不必附加，于是理由就凭空消失了。
