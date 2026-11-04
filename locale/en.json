@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Approval Card",
+    "description": "Shows the exact target (full path) and operation of this change at the top of the approval card, and keeps the downstream block reason."
+  }
+}

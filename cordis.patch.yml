@@ -1,0 +1,7 @@
+# dsh-approval-card bundle patch: 把本插件作为一行插入组合包。
+# 用裸包名（与 dsh-approval-gate 一致）：会被当作模块说明符从 profile 的
+# node_modules 解析 —— 本机是 node_modules/dsh-approval-card 这个 junction。
+# 不要写相对路径（那会相对 profile 目录解析，指不到 src/）。
+- insert:
+    - id: dsh-approval-card
+      name: 'dsh-approval-card'

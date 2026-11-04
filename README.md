@@ -1,0 +1,131 @@
+# dsh-approval-card
+
+审批卡最上面一行，写清「这次到底要动哪个文件、做什么」。
+
+## 它解决什么
+
+原来的审批卡经常只显示一句 `目标含工作区外路径 1 处：C:\Windows\Temp` —— 知道有越界，
+看不到真正被写的是哪个文件。原因有两层：
+
+1. 路径抽取在空白处切断，`D:\DeepSeek Harness工作目录\DeepSeek` 只剩 `D:\DeepSeek`；
+2. 卡片正文由审批门自己拼（`操作：/路径：` 两行，路径最多 5 条、每条还被截断），
+   而提权类请求的正文只是一句模型写的 `justification`，压根没有目标。
+
+本插件在审批瀑布最前面改写 `displayReason.zh`，产出：
+
+```
+对 D:\DeepSeek Harness工作目录\DeepSeek\device-audit\report.json 进行写入文件 [ 写入 ]
+权限：仅工作区可写（工作区外仍被拒绝）
+<下游原有的拦截理由，原样保留>
+```
+
+- 目标优先取工具的**结构化参数**（`file_path` / `path` / …）原文，不截短、不猜；
+  没有结构化参数时从命中语句里取路径（引号内整段、未加引号则向后接续到空白/选项/标点）。
+- 命令里的 `$env:NAME`、`${env:NAME}`、`%NAME%` 会按宿主环境展开后再取路径 ——
+  否则卡片上出现的是 `$env:DSH_HOME\…` 这种谁也不知道指向哪儿的字面量。
+- `http://` `https://` 这类 URL 整体当一个目标（不会被 `p://` 这样的盘符规则切断）；
+  语句里既有 URL 又有本地文件时，两个都会出现在理由里。
+- 语句里连一个绝对路径都没有时，显示**命中的那条命令**（`对 命令行 node ..\audit.js --fix 进行运行程序 [ 执行 ]`），
+  而不是只给一个「当前工作目录」——工作目录只是线索，能不能放行要看那条命令干什么。
+  命令只有相对路径时，把工具参数里的 `workdir` / `cwd` 一并写出：`命令行 node test/x.mjs（在 D:\...\pkg）`。
+- 宿主提权模板（`允许本次操作使用 <mode> 权限：<理由>`）只保留其中的**理由**，写成 `理由：…`；
+  模式名已经由 `权限：` 行说清，同一句模式在卡片上出现两遍属于噪音。
+- 下游理由按字段瘦身：`操作：`/`路径：` 行丢掉（那两行是审批门自己按空白截断的版本，与首行重复
+  且更含糊），保留 `目标：`/`拦截：`/`原因：`/`网络外发：`；理由里被门扫出来的伪路径
+  （`p://`、`/**`、正则片段、被截断的前缀）一并滤掉。
+- 拿不到任何真实信息时**不改**，绝不编造目标。
+- 只写 `displayReason`。`reason` 一个字不动 —— 上游的判定、审计与放行规则都在解析它。
+- 只展示，不决定：永远 `return next()`，放不放行完全交给审批门与宿主应答者。
+
+## 装法（本机）
+
+它是 profile 的正式 bundle（这样才会出现在「已安装插件」列表里，并被启用/停用开关管理）：
+
+1. `C:\Users\Administrator\.dsh\profiles\desktop\package.json`
+   - `dependencies` 加 `"dsh-approval-card": "file:plugins/dsh-approval-card"`
+   - `dsh.profile.bundles` 里加 `"dsh-approval-card"`
+2. `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-approval-card`
+   → 指向 `plugins\dsh-approval-card` 的 junction（包名要能从 profile 解析出来）
+3. 本包的 `cordis.patch.yml` 用**裸包名**插入自己：`name: 'dsh-approval-card'`
+   （相对路径会相对 profile 目录解析，指不到 `src/`）
+
+**不要再在 profile 的 `cordis.patch.yml` 里插一遍** —— 早期就是这么做的，改登记成 bundle 后
+两处都留着会让同一个插件挂两次（同一张卡被改写两遍）。那三行已经删掉，只留注释说明。
+
+改完要重启 DSH 才生效 —— 运行中的模块不会因为文件变化重新加载。
+
+`client.js` 是浏览器半边，只做一件事：给审批卡标题补 `white-space: pre-line`。
+不带它，上面那两行会被 CSS 折叠成一行（`_headline` 没有 `white-space` 声明）。
+组合包启动时会校验每个 `dsh.client` 包能否解析出 `exports["./client"]`，缺文件会直接
+抛 `ClientPackageCompositionError`；本机 DSH 能正常启动 = 这份 bundle 已被组合进前端。
+它按 `/plugins/<包名>/<文件名>?rev=<rev>` 提供，`rev` 不匹配时返回 404（属正常，不是缺失证据）。
+
+## 为什么 `prepend: true`
+
+审批瀑布上任何监听器返回结果就结束整条链，而真正弹卡的应答者由更早挂载的组合包注册。
+普通追加的监听器排在它后面，永远看不到待弹卡的请求。
+
+## 自检
+
+```powershell
+node --test test/text.test.mjs
+```
+
+插件目录下的 `.activity.log` 是它是否在工作的外部证据：
+出现 `apply` 行 = 运行中的 DSH 已加载它；出现 `rewrite:` 行 = 真的改写过文案。
+日志超过 512 KB 会自动只留最后 200 行 —— 它只用于排障，不该无限长。
+
+插件列表里的显示名「审批卡片」来自 `locale/zh.json` 的 `meta.title`（`locale/en.json`
+是宿主读取整目录的锚点，缺它中文不会被读到）。改包名没有意义：`dsh-approval-card`
+是模块说明符，被 `node_modules` 链接、`dsh.profile.bundles`、bundle patch 三处引用。
+
+## 与 dsh-approval-zh 的关系
+
+`dsh-approval-zh` 是同一需求的早期版本（逻辑已并入本包）。两者共存不会叠字：
+本包用 `hasSummary` 判断「已经带总结」，见到就只做幂等处理。
+建议只启用其中一个，避免同一张卡被两个插件轮流改写。
+
+## 第三轮：URL 优先级 / 反斜杠还原 / 目标计数
+
+- `preferLocal()`：命令里同时有 URL 和本地文件时，目标取本地文件
+  （`Invoke-RestMethod … -OutFile C:\x\pkg.json` 真正被改的是后者）；只有 URL 时才回退到 URL。
+- `unescapeBackslashes()`：审批门部分版本把路径再转义一层（`C:\\Users\\…`），
+  展示前还原成单反斜杠 —— 否则卡片上的路径既难读也不能直接复制。
+- 目标列表的条数改按**实际列出的项**计数：门报「3 处」但滤掉伪路径后只剩 1 条时，
+  写「1 处」，避免「3 处」后面只跟一个路径。
+
+## 第四轮：同一调用的重复审批要自报序号
+
+一次工具调用可能被问两次：审批门先问「放不放行」，放行后工具再问「给不给更大权限」
+（`dsh-sandbox` 的 `approveEscalation`）。两条请求各有独立的 id、各有一张卡，文案也完全不同，
+用户看到的是「两件不相干的事」。
+
+- `nextAskOrdinal(callId)`（`src/index.mjs`）：每个 `callId` 在内存里计数，**只数真的流到本插件的请求**
+  ——被上游直接答掉的请求不计数，否则会给唯一那张可见的卡凭空标个「第 2 个」。
+- `markRepeatOrdinal(zh, ordinal)`（`src/text.mjs`）：第 2 个及以后，在首行末尾追加
+  `（同一次操作的第 N 个审批请求）`；幂等，重复调用不会叠两遍。
+- 不改判断、不改 `reason`：编号只是让人知道「这张卡是接着上一张的」，点不点仍由应答者决定。
+
+真机回放：354 条 `approval/asked` → 354 条改写、86 条带序号、`reason` 0 条被改。
+
+## 第五轮：`cd` 的目标不是操作目标
+
+`cd 'X' && node y.js --in C:\z\a.json` 里，`X` 只是换了执行目录，真正被动的可能是 `a.json`。
+它偏偏排在语句最前面，不剔掉就会被当成「这次要动的东西」（线上出现过：目标显示成工作区，
+实际改的是会话目录）。`pathsInStatement()` 现在先收一遍 `cd` / `chdir` / `Set-Location` /
+`Push-Location` / `pushd` 的目标（含引号包裹、带空格的形式），再从候选里剔除。
+
+`markRepeatOrdinal()` 另外修了两处细节：标记前削掉首行残留的空格；计数表淘汰时跳过刚写入的
+那个 `callId`（否则同一个调用会被重新从 1 开始数）。
+
+## 第六轮：一个路径都拿不到时别装样子
+
+入口层探针（`probes/probe-handler.mjs`，用假 ctx 抓 `approval/request` 处理器）暴露了两处：
+
+- 拿不到任何路径时总结行只剩 `进行命令执行 [ 执行 ]` —— 少了「对什么」这半边，与
+  「有目标但很短」在版面上几乎一样，读者会以为已经显示了位置。改成 `对 未知位置 进行…`。
+- 宿主只给 `escalate sandbox to <mode>: <理由>` 而不给 `displayReason` 时，
+  `shouldAppendReason()` 把整条判为「不必附加」（假设理由已进总结），可总结里从来没有它，
+  模型写的理由就这么消失了。现在只要解析出 `justification` 就补一行 `理由：…`。
+- 同一 `callId` 的第 N 个请求如果本次**不需要改写**，之前不会标序号（标记只跟着改写走）。
+  现在以「卡片上现有的文案」为基准标号，第 2 张卡一样能自报序号。
