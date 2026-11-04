@@ -13,6 +13,7 @@ import {
 	hasSummary,
 	localizeSandboxModes,
 	markRepeatOrdinal,
+	modeFromText,
 	shouldAppendReason,
 	trimDownstreamReason,
 	DISPLAY_BREAK
@@ -345,4 +346,36 @@ test('有一处与首行重复时，计数保留并点明还有几处同上', ()
 	assert.ok(out.startsWith('目标含工作区外路径 2 处：'), out)
 	assert.ok(out.includes('C:\\Users\\me\\.dsh\\profiles\\web\\package.json'), out)
 	assert.ok(out.includes('（另有 1 处同上）'), out)
+})
+
+test('门先换掉 reason、宿主又给了提权模板时，权限行与门的判断依据都不能丢', () => {
+	// 真实形态（2026-11-04 10:59 第二张卡）：提权请求先过审批门，门把 reason 换成中文块，
+	// 模式标识只剩 displayReason 里还有。曾经整张卡只剩「对 … 进行写入 [ 写入 ]」+「理由：…」，
+	// 既不说是哪种权限，也看不到门为什么拦。
+	const req = {
+		toolName: 'pwsh',
+		reason:
+			'操作：写入文件\n路径：C:\\Windows\\Temp\\dsh-card-a.txt、C:\\Users\\Public\\dsh-card-b.txt',
+		displayReason: {
+			en: 'Allow this operation with danger-full-access permissions: 造一张多目录的卡',
+			zh: '允许本次操作使用 danger-full-access 权限：造一张多目录的卡'
+		}
+	}
+	const zh = applySummaryText(req, {
+		args: { command: "Set-Content 'C:\\Windows\\Temp\\dsh-card-a.txt' -Value x" },
+		cwd: WORK
+	})
+	const lines = zh.split(DISPLAY_BREAK)
+	assert.ok(lines[0].startsWith('对 C:\\Windows\\Temp\\dsh-card-a.txt 进行写入文件'), zh)
+	assert.ok(lines.some((l) => l.startsWith('权限：完全访问')), zh)
+	assert.ok(lines.some((l) => l === '理由：造一张多目录的卡'), zh)
+	assert.ok(!zh.includes('操作：'), zh)
+	assert.ok(!zh.includes('路径：'), zh)
+})
+
+test('模式能从已经本地化成中文的模板里认回来', () => {
+	assert.equal(modeFromText('允许本次操作使用 danger-full-access 权限：x'), 'danger-full-access')
+	assert.equal(modeFromText('允许本次操作使用 完全访问（整机可读写、含系统位置、不可自动回滚） 权限：x'), 'danger-full-access')
+	assert.equal(modeFromText('允许本次操作使用 仅工作区可写 权限：x'), 'workspace-write')
+	assert.equal(modeFromText('目标含工作区外路径 1 处：C:\\tmp'), '')
 })

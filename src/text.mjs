@@ -575,6 +575,33 @@ export function parseEscalationReason(reason) {
 	return { mode, justification: cut >= 0 ? text.slice(cut + 2) : '' }
 }
 
+/** 模式中文名 → 模式标识，用来从已经本地化过的文案里把模式捞回来。 */
+const MODE_ALIASES = new Map([
+	...[...MODE_LABELS].map(([id, label]) => [label, id]),
+	...Object.entries(MODE_SCOPE).map(([id, scope]) => [scope, id]),
+	['完全访问', 'danger-full-access'],
+	['仅工作区可写', 'workspace-write'],
+	['只读', 'read-only']
+])
+
+/**
+ * 从任意展示文案里认出沙箱模式。
+ *
+ * 提权请求的 `reason` 有时已经被审批门换成了它自己的中文块（`操作：… / 路径：…`），
+ * 模式标识就没了解析来源 —— 但宿主给的第二行 `displayReason` 里还有（`允许本次操作
+ * 使用 danger-full-access 权限：…`，或我们上一轮改成中文后的版本）。认不出来时卡片
+ * 会少一整行「权限：…」，用户就不知道这次给的是哪种权限。
+ * @param {unknown} text 候选文案。
+ * @returns {string} 模式标识；认不出时为空串。
+ */
+export function modeFromText(text) {
+	const s = typeof text === 'string' ? text : String(text ?? '')
+	if (s === '') return ''
+	for (const id of Object.keys(MODE_SCOPE)) if (s.includes(id)) return id
+	for (const [label, id] of MODE_ALIASES) if (s.includes(label)) return id
+	return ''
+}
+
 /**
  * 把宿主提权模板拆成「理由」部分。
  *
@@ -807,7 +834,12 @@ export function applySummaryText(req, facts) {
 	const hasZh = display !== null && typeof display === 'object' && typeof display.zh === 'string'
 	const rawZh = hasZh ? display.zh : ''
 	const rawReason = String(req.reason ?? '')
-	const { mode, justification } = parseEscalationReason(rawReason)
+	const escalation = parseEscalationReason(rawReason)
+	let mode = escalation.mode
+	const justification = escalation.justification
+	// 提权请求也会先过审批门：门可能已经把 `reason` 换成了它自己的中文块，
+	// 模式标识就只剩 `displayReason` 里还有。认不出来时「权限：」整行会消失。
+	if (mode === '') mode = modeFromText([display?.zh, display?.en].filter((v) => typeof v === 'string').join(' '))
 	const args = facts?.args ?? null
 	// 既看不到真实操作、也解析不出提权模式：宁可不改，也不要凭空编一句。
 	if (args === null && mode === '') return ''
@@ -841,12 +873,16 @@ export function applySummaryText(req, facts) {
 			const localized = localizeSandboxModes(rawZh)
 			if (localized.trim() !== '') parts.push(localized)
 		}
-	} else if (justification !== '') {
+	}
+	if (justification !== '' && !hasZh) {
 		// 宿主提权模板只出现在 `reason` 里（没有 displayReason）：`escalate sandbox to
 		// <mode>: <理由>` 的机器英文前缀不该上卡片，但后面那句模型写的理由必须留下 ——
 		// `shouldAppendReason` 会把整条 `escalate …` 判为不必附加，于是理由就凭空消失了。
 		parts.push(`理由：${justification}`)
-	} else {
+	}
+	// `reason` 不是提权模板，而是审批门换上的中文块：那是它独有的判断依据
+	// （目标/拦截/原因），宿主给了 `displayReason` 也不能把它挤掉。
+	if (escalation.mode === '' && justification === '') {
 		const downstream = trimDownstreamReason(rawReason, shownTarget, facts?.cwd ?? '')
 		if (shouldAppendReason(downstream, summary)) parts.push(localizeSandboxModes(downstream))
 	}
