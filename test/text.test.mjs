@@ -379,3 +379,34 @@ test('模式能从已经本地化成中文的模板里认回来', () => {
 	assert.equal(modeFromText('允许本次操作使用 仅工作区可写 权限：x'), 'workspace-write')
 	assert.equal(modeFromText('目标含工作区外路径 1 处：C:\\tmp'), '')
 })
+
+test('一条命令动了三处目录时，三个路径全部写在「对」和「进行」之间', () => {
+	const cmd =
+		"Set-Content 'C:\\Windows\\Temp\\a.txt' -Value x; " +
+		"Set-Content 'C:\\Users\\Public\\b.txt' -Value x; " +
+		"New-Item -ItemType Directory -Path 'C:\\tmp' -Force; " +
+		"Set-Content 'C:\\tmp\\c.txt' -Value x"
+	const req = {
+		toolName: 'pwsh',
+		reason: '目标含工作区外路径 3 处：C:\\Windows\\Temp\\a.txt , C:\\Users\\Public\\b.txt , C:\\tmp\\c.txt'
+	}
+	const zh = applySummaryText(req, { args: { command: cmd }, cwd: WORK })
+	const head = zh.split(DISPLAY_BREAK)[0]
+	assert.ok(head.includes('C:\\Windows\\Temp\\a.txt'), zh)
+	assert.ok(head.includes('C:\\Users\\Public\\b.txt'), zh)
+	assert.ok(head.includes('C:\\tmp\\c.txt'), zh)
+	// 子路径已说明同一件事，上级目录不再单列
+	assert.ok(!head.includes('C:\\tmp、'), zh)
+	assert.ok(head.endsWith('进行写入文件 [ 写入 ]'), zh)
+	// 三个目标都上了首行，下游那行统计没有新信息，不该重复出现
+	assert.equal(zh.split(DISPLAY_BREAK).length, 1, zh)
+})
+
+test('结构化字段给了两个文件时，两个都进首行', () => {
+	const head = buildSummaryLine({
+		toolName: 'write',
+		args: { file_path: 'C:\\Users\\Public\\a.txt', path: 'C:\\Users\\Public\\b.txt' },
+		cwd: WORK
+	})
+	assert.equal(head, '对 C:\\Users\\Public\\a.txt、C:\\Users\\Public\\b.txt 进行写入文件 [ 写入 ]')
+})

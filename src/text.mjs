@@ -163,6 +163,9 @@ const QUOTED_PATH_RE = /(['"])((?:[A-Za-z]:[\\/]|\\\\|\/)[^'"\r\n]*?)\1/g
  */
 export const DISPLAY_BREAK = ' \n'
 
+/** 首行最多罗列几个目标：再多就把卡片撑成一段话，超出部分用「等 N 处」收尾。 */
+const TARGET_LIST_MAX = 6
+
 /**
  * 工具名 → 操作类别。
  * 带命名空间的变体（`mcp__fs.edit_file`、`fs:write`）先取尾段再查表。
@@ -494,6 +497,86 @@ function workdirOf(args) {
 }
 
 /**
+ * 工具参数里所有能当目标的结构化字段值（不止第一个）。
+ * @param {object|null} args 工具参数。
+ * @param {object|null} env 环境变量。
+ * @returns {string[]} 路径列表。
+ */
+function pathsOfArgs(args, env = null) {
+	if (args === null || typeof args !== 'object') return []
+	const out = []
+	for (const key of FILE_KEYS) {
+		const value = args[key]
+		const list = Array.isArray(value) ? value : [value]
+		for (const item of list) {
+			if (typeof item !== 'string') continue
+			const path = expandEnvVars(item.trim(), env)
+			if (path.length < 3 || (!path.includes('/') && !path.includes('\\'))) continue
+			if (/^(?:https?:|data:|blob:)/i.test(path)) continue
+			out.push(path)
+		}
+	}
+	return out
+}
+
+/**
+ * 一条命令可能动的不止一个东西（`Set-Content a; Set-Content b; …`）：按
+ * 「结构化字段 → 命中语句 → 命令任意位置 → 申请理由」逐层收齐，去重保序。
+ *
+ * 首行把每个目标都写出来，用户扫一眼就知道这次要碰几处文件；此前只写第一个，
+ * 其余靠下游那行「目标含工作区外路径 N 处：…」补 —— 那行是审批门按空白截断过的，
+ * 而且经常整行退化成一句没有路径的统计。
+ * @param {{args?: object|null, command?: string, statement?: string, justification?: unknown, cwd?: unknown, env?: object|null}} input 事实。
+ * @returns {string[]} 目标列表（已去重，可能为空）。
+ */
+export function targetListFor(input) {
+	const o = input || {}
+	const env = o.env ?? null
+	const seen = new Set()
+	const out = []
+	const push = (value) => {
+		const path = clipPath(String(value ?? '').trim())
+		if (path === '') return
+		const key = path.toLowerCase()
+		if (seen.has(key)) return
+		seen.add(key)
+		out.push(path)
+	}
+	// 子路径已经说明同一件事时，上级目录不再单列（`C:\tmp` 之于 `C:\tmp\x.txt`）。
+	const finish = () =>
+		out.filter((path) => {
+			const prefix = `${path.replace(/[\\/]+$/, '').toLowerCase()}\\`
+			return !out.some((other) => other !== path && other.toLowerCase().startsWith(prefix))
+		})
+	for (const path of pathsOfArgs(o.args ?? null, env)) push(path)
+	if (out.length > 0) return finish()
+	const command = String(o.command ?? '')
+	if (command.trim() !== '') {
+		// 一条命令常由几条语句拼出来（`Set-Content a; Set-Content b; …`）：只取「命中动词」那一条
+		// 语句，首行就只写得出第一处，剩下的靠下游统计补 —— 而下游那行是门按空白截断过的。
+		// 逐段取，去重后全部进首行。
+		const vars = variableValues(command)
+		const segments = command
+			.split(/[;\n]/)
+			.map((segment) => segment.trim())
+			.filter((segment) => segment !== '')
+		for (const segment of segments) {
+			for (const path of localFirst(pathsInStatement(segment, vars))) push(path)
+		}
+		if (out.length > 0) return finish()
+		for (const path of localFirst(extractPaths(command, 8))) push(path)
+		if (out.length > 0) return finish()
+	}
+	for (const path of extractPaths(expandEnvVars(o.justification, env), 3)) push(path)
+	// `New-Item -Path C:\tmp; Set-Content C:\tmp\x.txt` 会把上级目录也收进来：子路径已经
+	// 说明了同一件事，目录单独列一遍只是让首行变长。
+	return out.filter((path) => {
+		const prefix = `${path.replace(/[\\/]+$/, '').toLowerCase()}\\`
+		return !out.some((other) => other !== path && other.toLowerCase().startsWith(prefix))
+	})
+}
+
+/**
  * 操作名 → 影响分类标签。
  * @param {string} operation 操作名。
  * @returns {string} `写入` / `修改` / `删除` / `读取` / `执行`。
@@ -513,14 +596,25 @@ export function buildSummaryLine(input) {
 	const command = expandEnvVars(commandOf(o.args ?? null), env)
 	const hit = matchOperation(command)
 	const operation = hit.operation !== '' ? hit.operation : operationFor({ command, toolName: o.toolName })
-	const target = targetFor({
+	const facts = {
 		args: o.args ?? null,
 		command,
 		statement: hit.statement,
 		justification: o.justification,
 		cwd: o.cwd,
 		env
-	})
+	}
+	const targets = targetListFor(facts)
+	let target = ''
+	if (targets.length === 0) {
+		// 一条路径都没有：退回「命令行 …」/「当前工作目录 …」这种线索式目标。
+		target = targetFor(facts)
+	} else {
+		// 全部路径都写进「对 … 进行」之间：一次要动三处文件时，只写第一处等于瞒了两处。
+		const shown = targets.slice(0, TARGET_LIST_MAX)
+		const more = targets.length > shown.length ? ` 等 ${targets.length} 处` : ''
+		target = `${shown.join('、')}${more}`
+	}
 	// 一个路径都拿不到时（会话事件缺失、命令里没有绝对路径、连理由里也没写）：老实写
 	// 「未知位置」。此前的 `进行命令执行 [ 执行 ]` 少了「对什么」这一半，读者根本没法判断
 	// 要不要放行，而且和「有目标但很短」在版面上长得一样，更容易被当成已显示。
@@ -681,6 +775,18 @@ function preferLocal(paths) {
 	return local !== undefined ? local : list[0]
 }
 
+/**
+ * 同上，但保留全部本地路径 —— 首行要一次写清所有目标，只留一个就白费了。
+ * 一条命令里既有 URL 又有本地文件时，URL 只是数据来源，不该占「对 … 进行」的位置。
+ * @param {string[]} paths 候选路径。
+ * @returns {string[]} 本地路径（一个都没有时返回原列表）。
+ */
+function localFirst(paths) {
+	const list = Array.isArray(paths) ? paths : []
+	const local = list.filter((p) => !/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(p))
+	return local.length > 0 ? local : list
+}
+
 /** 看起来是一条路径（不是正则片段，也不是被盘符规则误伤的 `p://`）。 */
 function looksLikePath(token) {
 	if (token === '') return false
@@ -697,10 +803,14 @@ function looksLikePath(token) {
  */
 function isSameAsShown(token, context) {
 	const lower = token.toLowerCase()
-	const shown = String(context?.shown ?? '').trim().toLowerCase()
-	if (shown === '') return false
-	if (shown === lower) return true
-	return shown.startsWith(lower) && shown.length > lower.length
+	const raw = context?.shownList ?? (context?.shown === undefined ? [] : [context.shown])
+	for (const item of raw) {
+		const shown = String(item ?? '').trim().toLowerCase()
+		if (shown === '') continue
+		if (shown === lower) return true
+		if (shown.startsWith(lower) && shown.length > lower.length) return true
+	}
+	return false
 }
 
 /**
@@ -731,6 +841,9 @@ function isCwdTruncation(token, context) {
  */
 export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 	const text = String(reason ?? '')
+	const shownList = (Array.isArray(shownTarget) ? shownTarget : [shownTarget])
+		.map((item) => String(item ?? '').trim())
+		.filter((item) => item !== '')
 	// 多行 = 审批门的「整块理由」形态；单行 = 它一句话的转人工依据。
 	const multiLine = text.includes('\n')
 	const kept = []
@@ -747,7 +860,7 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 			continue
 		}
 		const [, label, count, rest] = list
-		const context = { shown: shownTarget.trim().toLowerCase(), cwd }
+		const context = { shownList, cwd }
 		// 门有时把围栏结论接在同一行（`… 1 处：<路径>；破坏性动作：Remove-Item $keep -Recurse`）。
 		// 不先切开就会把「路径 + 句子」当成一个 token：里面有 `$`，被代码嗅探整条丢掉 ——
 		// 于是路径和拦截理由一起消失。先按分号拆成「路径段 + 尾随字段」。
@@ -774,8 +887,17 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 		// 前一类不计；后一类是真路径，只是上面已经写清楚了 —— 计数留住、点明「同上」，
 		// 不然用户会以为还有一处被藏了。
 		const realCount = items.length + dupCount
+		// 首行列的条数已不少于门报的处数：这句统计不再包含任何新信息，纯占版面。
+		const covered = Number.isFinite(total) && total > 0 && shownList.length >= total
 		if (items.length === 0) {
-			kept.push(dupCount > 0 ? `${label} ${count} 处（就是上面那个）` : `${label} ${count} 处`)
+			if (dupCount > 0) {
+				// 单目标形态仍要点明「就是上面那个」；多目标形态下首行已列全，直接省掉。
+				if (!covered || shownList.length <= 1) kept.push(`${label} ${count} 处（就是上面那个）`)
+			} else if (!covered) {
+				// 列出的全是噪声（正则片段、被盘符规则误伤的东西），但「门确实报了 N 处」要留住，
+				// 否则卡片看起来像什么都没发生。
+				kept.push(`${label} ${count} 处`)
+			}
 		} else {
 			const head2 = realCount === total ? `${label} ${count} 处` : `${label} ${items.length} 处`
 			const shownItems = items.slice(0, 5)
@@ -794,6 +916,22 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 
 /** 已经标过序号的尾巴，用来保证重复调用不叠加。 */
 const ORDINAL_TAIL_RE = /（同一次操作的第 \d+ 个审批请求）\s*$/
+
+/**
+ * 从首行 `对 a、b、c 等 N 处 进行…` 里把已经列举出来的目标拆回来，用于下游去重。
+ * @param {unknown} zh 当前文案。
+ * @returns {string[]} 首行已写明的目标列表。
+ */
+function shownTargetsOf(zh) {
+	const first = String(zh ?? '').split('\n')[0]
+	const inner = /^对\s+([\s\S]*?)\s+进行/.exec(first)?.[1] ?? ''
+	if (inner === '') return []
+	return inner
+		.replace(/\s*等\s*\d+\s*处\s*$/, '')
+		.split('、')
+		.map((item) => item.trim())
+		.filter((item) => item !== '')
+}
 
 /**
  * 给「同一次调用的第 N 个审批请求」加个记号。
@@ -855,9 +993,9 @@ export function applySummaryText(req, facts) {
 	const parts = []
 	if (!hasSummary(rawZh)) parts.push(summary)
 	// 首行已经写明的目标：下游理由里重复列举它只是噪音（还会带上被截断的版本）。
-	const shownTarget = hasSummary(rawZh)
-		? (/^对\s+(.+?)\s+进行/.exec(rawZh.trim())?.[1] ?? '')
-		: targetFor({
+	const shownTargets = hasSummary(rawZh)
+		? shownTargetsOf(rawZh)
+		: targetListFor({
 				args,
 				command: expandEnvVars(commandOf(args), facts?.env ?? null),
 				justification,
@@ -883,7 +1021,7 @@ export function applySummaryText(req, facts) {
 	// `reason` 不是提权模板，而是审批门换上的中文块：那是它独有的判断依据
 	// （目标/拦截/原因），宿主给了 `displayReason` 也不能把它挤掉。
 	if (escalation.mode === '' && justification === '') {
-		const downstream = trimDownstreamReason(rawReason, shownTarget, facts?.cwd ?? '')
+		const downstream = trimDownstreamReason(rawReason, shownTargets, facts?.cwd ?? '')
 		if (shouldAppendReason(downstream, summary)) parts.push(localizeSandboxModes(downstream))
 	}
 	const zh = toDisplayText(parts.join('\n'))
