@@ -612,7 +612,7 @@ export function shouldAppendReason(text, summary) {
 const GATE_PATH_LIST_RE = /^(目标含工作区外路径|目标|路径清单)\s*(\d+)\s*处\s*[：:]\s*(.*)$/s
 
 /** 审批门整块理由里值得保留的字段行（其余行视为误带进来的正文）。 */
-const GATE_FIELD_RE = /^(?:目标|拦截|影响|原因|网络外发|权限|判定|分类|范围|风险|来源|工具|技能|命令|说明)[：:]/
+const GATE_FIELD_RE = /^(?:目标|拦截|影响|原因|网络外发|网络|权限|判定|分类|范围|风险|来源|工具|技能|命令|说明|破坏性动作|动作|围栏)[：:]/
 
 /** 正则/代码片段常带这些字符，真路径几乎不会。 */
 const CODE_SNIFF_RE = /[()[\]|^$*?<>"`]/
@@ -654,20 +654,37 @@ function preferLocal(paths) {
 	return local !== undefined ? local : list[0]
 }
 
-function isPlausiblePath(token, context) {
+/** 看起来是一条路径（不是正则片段，也不是被盘符规则误伤的 `p://`）。 */
+function looksLikePath(token) {
 	if (token === '') return false
 	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/$/.test(token)) return false // `p://`
 	if (/^[*\/]+$/.test(token)) return false // `/**`、`//`
 	if (!/[\\/]/.test(token)) return false // 连分隔符都没有
-	if (CODE_SNIFF_RE.test(token)) return false // 正则 / 代码片段
-	// 被空白截断的前缀（`D:\DeepSeek` 之于 `D:\DeepSeek Harness工作目录\…`）：真目标或工作
-	// 目录已经包含它，再列一遍只会让人以为是另一处。
+	return !CODE_SNIFF_RE.test(token) // 正则 / 代码片段
+}
+
+/**
+ * 与首行目标指的是同一处：完全相同，或是它被空白截断后的前缀
+ * （`D:\DeepSeek` 之于 `D:\DeepSeek Harness工作目录\…`）。
+ * 这类项不算「另一处」，但也不能当成噪声丢掉 —— 计数要留住，并注明「同上」。
+ */
+function isSameAsShown(token, context) {
 	const lower = token.toLowerCase()
-	for (const known of [context?.shown, context?.cwd]) {
-		const full = String(known ?? '').trim().toLowerCase()
-		if (full !== '' && full !== lower && full.startsWith(lower) && full.length > lower.length) return false
-	}
-	return true
+	const shown = String(context?.shown ?? '').trim().toLowerCase()
+	if (shown === '') return false
+	if (shown === lower) return true
+	return shown.startsWith(lower) && shown.length > lower.length
+}
+
+/**
+ * 只是工作目录被截断的残片。它既不是本次目标、也不是「另一处」——
+ * 说「同上」会指错地方（上面写的是文件，不是工作目录），所以直接当噪声丢掉。
+ */
+function isCwdTruncation(token, context) {
+	const lower = token.toLowerCase()
+	const cwd = String(context?.cwd ?? '').trim().toLowerCase()
+	if (cwd === '' || cwd === lower) return false
+	return cwd.startsWith(lower) && cwd.length > lower.length
 }
 
 /**
@@ -703,25 +720,47 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 			continue
 		}
 		const [, label, count, rest] = list
-		const shown = shownTarget.trim().toLowerCase()
-		const raw = rest
+		const context = { shown: shownTarget.trim().toLowerCase(), cwd }
+		// 门有时把围栏结论接在同一行（`… 1 处：<路径>；破坏性动作：Remove-Item $keep -Recurse`）。
+		// 不先切开就会把「路径 + 句子」当成一个 token：里面有 `$`，被代码嗅探整条丢掉 ——
+		// 于是路径和拦截理由一起消失。先按分号拆成「路径段 + 尾随字段」。
+		const [pathPart, ...trailing] = String(rest).split(/[；;]/).map((s) => s.trim())
+		const candidates = String(pathPart ?? '')
 			.split(/\s*[,，、]\s*/)
 			.map((item) => item.trim())
 			.filter((item) => item !== '')
-		const unique = raw.filter((item) => item.toLowerCase() !== shown)
-		const items = unique.filter((item) => isPlausiblePath(item, { shown, cwd }))
-		if (items.length === 0) {
-			// 门列的每一项都是首行已经写明的那个目标：它没有补充任何信息，
-			// 但也不能一声不响地吞掉（用户会以为门根本没拦）—— 明说「就是上面那个」。
-			kept.push(raw.length > 0 && unique.length === 0 ? `${label} ${count} 处（就是上面那个）` : `${label} ${count} 处`)
-			continue
+		const items = []
+		let dupCount = 0
+		for (const item of candidates) {
+			if (!looksLikePath(item)) continue
+			// 先判「目录残片」：工作目录本身被空白截断的产物（`D:\DeepSeek`），
+			// 它同时也是首行文件的上级目录，但那不代表「还有一处」。
+			if (isCwdTruncation(item, context)) continue
+			if (isSameAsShown(item, context)) {
+				dupCount += 1
+				continue
+			}
+			items.push(item)
 		}
-		const shownItems = items.slice(0, 5)
-		// 门报的「N 处」包含它从文件正文里误抽的伪路径（我们已滤掉）和与首行重复的目标，
-		// 与下面真正列出来的条数对不上时，以列出来的为准 —— 否则「3 处」后面只跟一个路径，
-		// 读者会以为还有两处被藏了。
-		const head2 = items.length === Number(count) ? `${label} ${count} 处` : `${label} ${items.length} 处`
-		kept.push(`${head2}：${shownItems.join('、')}${items.length > shownItems.length ? ` 等 ${items.length} 处` : ''}`)
+		const total = Number(count)
+		// 「N 处」里的 N 混着两类不该单列的项：从文件正文误抽的伪路径、与首行重复的目标。
+		// 前一类不计；后一类是真路径，只是上面已经写清楚了 —— 计数留住、点明「同上」，
+		// 不然用户会以为还有一处被藏了。
+		const realCount = items.length + dupCount
+		if (items.length === 0) {
+			kept.push(dupCount > 0 ? `${label} ${count} 处（就是上面那个）` : `${label} ${count} 处`)
+		} else {
+			const head2 = realCount === total ? `${label} ${count} 处` : `${label} ${items.length} 处`
+			const shownItems = items.slice(0, 5)
+			const more = items.length > shownItems.length ? ` 等 ${items.length} 处` : ''
+			const same = dupCount > 0 ? `（另有 ${dupCount} 处同上）` : ''
+			kept.push(`${head2}：${shownItems.join('、')}${more}${same}`)
+		}
+		for (const chunk of trailing) {
+			if (chunk === '' || !GATE_FIELD_RE.test(chunk)) continue
+			if (/^(?:操作|路径)[：:]/.test(chunk)) continue
+			kept.push(chunk)
+		}
 	}
 	return kept.join('\n')
 }

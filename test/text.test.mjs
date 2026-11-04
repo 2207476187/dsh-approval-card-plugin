@@ -316,3 +316,33 @@ test('宿主只给 escalate 文本、没有 displayReason 时，模型写的理�
 	assert.ok(lines.some((l) => l.startsWith('权限：完全访问')), zh)
 	assert.equal(req.reason, 'escalate sandbox to danger-full-access: 需要写系统临时目录里的校验文件')
 })
+
+test('分号后面的围栏结论不能被当成路径的一部分丢掉', () => {
+	// 真实形态（2026-11-04 10:47）：门把围栏结论接在同一行，路径后面紧跟 `；破坏性动作：…`。
+	// 曾经整条 token 因为含 `$` 被代码嗅探丢掉 —— 工作区外的临时目录和拦截理由一起消失。
+	const reason =
+		'目标含工作区外路径 1 处：C:\\Users\\me\\AppData\\Local\\Temp\\dsh-x\\dsh-approval-card-plugin；破坏性动作：Remove-Item $keep -Recurse'
+	const out = trimDownstreamReason(reason, 'D:\\ws\\.build\\plugin-repo', 'D:\\ws')
+	const lines = out.split('\n')
+	assert.ok(out.includes('C:\\Users\\me\\AppData\\Local\\Temp\\dsh-x\\dsh-approval-card-plugin'), out)
+	assert.ok(out.includes('破坏性动作：Remove-Item $keep -Recurse'), out)
+	assert.equal(lines.length, 2, out)
+})
+
+test('被空白截断的前缀算「同上」，不能只留一个光秃秃的 N 处', () => {
+	const out = trimDownstreamReason(
+		'目标含工作区外路径 1 处：C:\\Users\\me\\.dsh\\node_modules\\dsh-approval-gate',
+		'C:\\Users\\me\\.dsh\\node_modules\\dsh-approval-gate\\src\\paths.mjs',
+		'D:\\ws'
+	)
+	assert.equal(out, '目标含工作区外路径 1 处（就是上面那个）')
+})
+
+test('有一处与首行重复时，计数保留并点明还有几处同上', () => {
+	const reason =
+		'目标含工作区外路径 2 处：C:\\Users\\me\\.dsh\\profiles\\desktop\\package.json , C:\\Users\\me\\.dsh\\profiles\\web\\package.json'
+	const out = trimDownstreamReason(reason, 'C:\\Users\\me\\.dsh\\profiles\\desktop\\package.json', 'D:\\ws')
+	assert.ok(out.startsWith('目标含工作区外路径 2 处：'), out)
+	assert.ok(out.includes('C:\\Users\\me\\.dsh\\profiles\\web\\package.json'), out)
+	assert.ok(out.includes('（另有 1 处同上）'), out)
+})
