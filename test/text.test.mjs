@@ -493,3 +493,24 @@ test('没有影响行时权限行要留着', () => {
 	])
 	assert.ok(out.some((line) => line.startsWith('权限：')), out.join(' | '))
 })
+
+test('原因与理由不是同一句时两行都留', () => {
+	// 门记的「原因」和宿主 displayReason 里的理由偶尔不是同一句 —— 那不是重复
+	const out = pruneRedundantFields([
+		'对 C:\\tmp\\a.txt 进行写入文件 [ 写入 ]',
+		'理由：往临时目录放一个校验文件',
+		'目标：工作区外',
+		'原因：用户要求验证卡片文案，需要写到工作区外'
+	])
+	assert.ok(out.some((line) => line.startsWith('理由：')), out.join(' | '))
+	assert.ok(out.some((line) => line.startsWith('原因：')), out.join(' | '))
+})
+
+test('只放宽到工作区可写时，权限行不能因为影响行就删掉', () => {
+	const out = pruneRedundantFields([
+		'对 C:\\tmp\\a.txt 进行写入文件 [ 写入 ]\n权限：仅工作区可写（工作区外仍被拒绝）',
+		'影响：工作区内的文件（可回滚）'
+	])
+	assert.ok(out.some((line) => line.startsWith('权限：')), out.join(' | '))
+	assert.ok(out.some((line) => line.startsWith('影响：')), out.join(' | '))
+})

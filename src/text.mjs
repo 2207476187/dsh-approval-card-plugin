@@ -1019,22 +1019,33 @@ export function markRepeatOrdinal(zh, ordinal) {
  * @returns {string} 最终写入的 `zh`；没改动时为空串。
  */
 /**
- * 同一件事说了两遍的字段只留一遍：
- * - `命令：`（门把多行脚本截断后剩下的开场白，首行已经写清目标）整行不要；
- * - `原因：` 与 `理由：` 是同一句模型写的 justification，留 `理由：`；
- * - `权限：`（沙箱模式）与 `影响：`（门算出的后果）说的是同一件事，留信息更全的 `影响：`。
+ * 同一件事说了两遍的字段只留一遍。三条规则的紧度各不相同，宁可多留也不误删：
+ * - `命令：`（门把多行脚本截断后剩下的开场白）一律不要 —— 目标已经写在首行，
+ *   而且这行的内容本来就是半句；
+ * - `原因：` 只在**与某条 `理由：` 内容相同**时丢掉。文案相同才叫重复；门记的
+ *   `原因` 与宿主 `displayReason` 里的理由偶尔不是同一句，那时两行都该留；
+ * - `权限：`（这次放宽到的沙箱模式）只在**「影响：」已经把话说全**时丢掉 ——
+ *   判断依据是影响行自己的措辞（含「整机 / 任意路径 / 系统位置」），不看模式名：
+ *   模式名只能说明授予了什么，说不清会动到哪里，而后者才是用户要看的。
+ *   其它情况（例如仅工作区可写、或门没给影响行）`权限：` 是唯一说明边界的一行，必须留。
  */
 export function pruneRedundantFields(parts) {
-	// 首行与「权限：」是同一个片段里的两行（`buildSummaryLine` 一次返回两行），
+	// 首行与「权限：」是同一个片段里的两行（`buildSummaryLine` 一次返回 `对 … 进行…\n权限：…`），
 	// 按片段判断 startsWith 会漏掉第二行 —— 先摊平成行再判断。
 	const lines = parts.flatMap((part) => String(part).split('\n'))
-	const has = (label) => lines.some((line) => line.startsWith(label))
-	const hasReason = has('理由：')
-	const hasImpact = has('影响：')
+	const valueOf = (line) => {
+		const at = line.indexOf('：')
+		return at === -1 ? '' : line.slice(at + 1).trim().toLowerCase()
+	}
+	const reasons = lines.filter((line) => line.startsWith('理由：')).map(valueOf)
+	const impacts = lines.filter((line) => line.startsWith('影响：')).map(valueOf)
+	const impactCoversMode = impacts.some(
+		(text) => text.includes('整机') || text.includes('任意路径') || text.includes('系统位置')
+	)
 	return lines.filter((line) => {
 		if (line.startsWith('命令：')) return false
-		if (line.startsWith('原因：') && hasReason) return false
-		if (line.startsWith('权限：') && hasImpact) return false
+		if (line.startsWith('原因：') && reasons.includes(valueOf(line))) return false
+		if (line.startsWith('权限：') && impactCoversMode) return false
 		return true
 	})
 }
