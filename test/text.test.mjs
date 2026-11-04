@@ -576,3 +576,27 @@ test('门的字段清单比 300 字长时也要保留（正文才该按长度丢
 	assert.equal(shouldAppendReason(long, '对 x 进行写入'), true)
 	assert.equal(shouldAppendReason('很长的一段正文'.repeat(100), '对 x 进行写入'), false)
 })
+
+test('同一请求被问第二次时，不能因为已有总结就丢掉权限行与理由行', () => {
+	// 真机 13:41:47 的第二张卡只剩首行：第一次已把总结写进 displayReason，
+	// 第二次（门换掉 reason）看到「已有总结」就不再拼，权限/理由一起消失。
+	const args = {
+		command: "Set-Content -LiteralPath 'C:\\Users\\Public\\a.txt' -Value x",
+		sandbox_permissions: 'danger-full-access',
+		justification: '复现两张卡。'
+	}
+	const first = applySummaryText(
+		{ toolName: 'pwsh', callId: 'c', reason: '目标含工作区外路径 1 处：C:\\Users\\Public\\a.txt' },
+		{ args, cwd: 'D:\\ws', env: process.env }
+	)
+	const carried = { zh: first, en: 'Set-Content …' }
+	const second = applySummaryText(
+		{ toolName: 'pwsh', callId: 'c', reason: 'escalate sandbox to danger-full-access: 复现两张卡。', displayReason: carried },
+		{ args, cwd: 'D:\\ws', env: process.env }
+	)
+	const lines = second.split(DISPLAY_BREAK)
+	assert.ok(lines.some((l) => l.startsWith('权限：完全访问')), second)
+	assert.ok(second.includes('理由：复现两张卡。'), second)
+	// 首行只能出现一次
+	assert.equal(lines.filter((l) => l.startsWith('对 ')).length, 1, second)
+})

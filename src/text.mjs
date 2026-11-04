@@ -1114,7 +1114,14 @@ export function applySummaryText(req, facts) {
 		env: facts?.env ?? null
 	})
 	const parts = []
-	if (!hasSummary(rawZh)) parts.push(summary)
+	if (hasSummary(rawZh)) {
+		// 同一个请求在审批链上会被问两次：第一次已经把总结写进 displayReason，
+		// 第二次（门换掉 reason 之后）不该因为「已经有总结」就把权限行/理由行丢掉 ——
+		// 只补仍然缺的行。真机上第二张卡只剩首行就是这个原因。
+		for (const line of summary.split('\n').slice(1)) {
+			if (!rawZh.includes(line)) parts.push(line)
+		}
+	} else parts.push(summary)
 	// 首行已经写明的目标：下游理由里重复列举它只是噪音（还会带上被截断的版本）。
 	const shownTargets = hasSummary(rawZh)
 		? shownTargetsOf(rawZh)
@@ -1135,7 +1142,7 @@ export function applySummaryText(req, facts) {
 			if (localized.trim() !== '') parts.push(localized)
 		}
 	}
-	if (justification !== '' && !hasZh) {
+	if (justification !== '' && !parts.some((line) => line.startsWith('理由：')) && !rawZh.includes('理由：')) {
 		// 宿主提权模板只出现在 `reason` 里（没有 displayReason）：`escalate sandbox to
 		// <mode>: <理由>` 的机器英文前缀不该上卡片，但后面那句模型写的理由必须留下 ——
 		// `shouldAppendReason` 会把整条 `escalate …` 判为不必附加，于是理由就凭空消失了。
