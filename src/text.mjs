@@ -544,6 +544,8 @@ export function targetListFor(input) {
 		const raw = String(value ?? '').trim()
 		// `\\?\$p`、`C:\tmp exists={0}` 这类是脚本里的变量引用和格式串，不是这次要动的文件。
 		if (JUNK_PATH_RE.test(raw)) return
+		// `// 说明文字` 是代码注释被接续出来的，不是这次要动的文件。
+		if (/^\/\//.test(raw) && /\s/.test(raw)) return
 		const path = clipPath(raw)
 		if (path === '') return
 		const key = path.toLowerCase()
@@ -833,6 +835,8 @@ function looksLikePath(token) {
 	if (JUNK_PATH_RE.test(token)) return false // `\\?\$p`、`C:\tmp exists={0}`
 	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/$/.test(token)) return false // `p://`
 	if (/^[*\/]+$/.test(token)) return false // `/**`、`//`
+	// 注释被 extendTail 连成一个带空格的 token（`// looksLikeCode`）—— 那是注释，不是路径。
+	if (/^\/\//.test(token) && /\s/.test(token)) return false
 	if (!/[\\/]/.test(token)) return false // 连分隔符都没有
 	return !CODE_SNIFF_RE.test(token) // 正则 / 代码片段
 }

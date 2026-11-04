@@ -636,3 +636,14 @@ test('模型写的那句理由优先于宿主模板尾部', () => {
 	assert.ok(zh.includes('理由：模型写的理由'), zh)
 	assert.ok(!zh.includes('模板里的旧句子'), zh)
 })
+test('命令里的 // 注释不算目标', () => {
+	// 真机 13:55:46：首行出现了「// looksLikeCode」—— 注释被 extendTail 接续成 token。
+	const command = [
+		"Set-Content -LiteralPath 'D:\\ws\\src\\text.mjs' -Value $c",
+		'// looksLikeCode 说明文字',
+		"Add-Content 'D:\\ws\\test\\text.test.mjs' $more"
+	].join('\n')
+	const zh = applySummaryText({ toolName: 'pwsh', reason: '目标含工作区外路径 2 处：D:\\ws\\src\\text.mjs , D:\\ws\\test\\text.test.mjs' }, { args: { command }, cwd: 'D:\\ws' })
+	assert.ok(!zh.includes('looksLikeCode'), zh)
+	assert.ok(zh.includes('D:\\ws\\src\\text.mjs'), zh)
+})
