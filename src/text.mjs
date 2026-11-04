@@ -529,13 +529,22 @@ function pathsOfArgs(args, env = null) {
  * @param {{args?: object|null, command?: string, statement?: string, justification?: unknown, cwd?: unknown, env?: object|null}} input 事实。
  * @returns {string[]} 目标列表（已去重，可能为空）。
  */
+/**
+ * 脚本里的变量引用与格式串，长得像路径但不是这次要动的文件：
+ * `\\?\$p`（设备前缀 + 变量）、`C:\tmp exists={0}`（格式化字符串）。
+ */
+const JUNK_PATH_RE = /[$%{}]|^\\\\\?\\/
+
 export function targetListFor(input) {
 	const o = input || {}
 	const env = o.env ?? null
 	const seen = new Set()
 	const out = []
 	const push = (value) => {
-		const path = clipPath(String(value ?? '').trim())
+		const raw = String(value ?? '').trim()
+		// `\\?\$p`、`C:\tmp exists={0}` 这类是脚本里的变量引用和格式串，不是这次要动的文件。
+		if (JUNK_PATH_RE.test(raw)) return
+		const path = clipPath(raw)
 		if (path === '') return
 		const key = path.toLowerCase()
 		if (seen.has(key)) return
@@ -570,10 +579,7 @@ export function targetListFor(input) {
 	for (const path of extractPaths(expandEnvVars(o.justification, env), 3)) push(path)
 	// `New-Item -Path C:\tmp; Set-Content C:\tmp\x.txt` 会把上级目录也收进来：子路径已经
 	// 说明了同一件事，目录单独列一遍只是让首行变长。
-	return out.filter((path) => {
-		const prefix = `${path.replace(/[\\/]+$/, '').toLowerCase()}\\`
-		return !out.some((other) => other !== path && other.toLowerCase().startsWith(prefix))
-	})
+	return finish()
 }
 
 /**
@@ -790,6 +796,7 @@ function localFirst(paths) {
 /** 看起来是一条路径（不是正则片段，也不是被盘符规则误伤的 `p://`）。 */
 function looksLikePath(token) {
 	if (token === '') return false
+	if (JUNK_PATH_RE.test(token)) return false // `\\?\$p`、`C:\tmp exists={0}`
 	if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/$/.test(token)) return false // `p://`
 	if (/^[*\/]+$/.test(token)) return false // `/**`、`//`
 	if (!/[\\/]/.test(token)) return false // 连分隔符都没有
@@ -851,6 +858,9 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 		const head = unescapeBackslashes(line.trim())
 		if (head === '') continue
 		if (/^(?:操作|路径)[：:]/.test(head)) continue
+		// 门把命令也记一行，但它是按换行截断的：多行脚本只剩 `$paths = @(` 这种开场白，
+		// 首行已经写清操作和目标，这半句话只会在卡片上添噪声。
+		if (/^命令[：:]/.test(head) && isTruncatedCommand(head.replace(/^命令[：:]\s*/, ''))) continue
 		const list = GATE_PATH_LIST_RE.exec(head)
 		if (list === null) {
 			// 单行理由（`目标含工作区外路径 1 处`、`判定器不可用`）整句保留 —— 它就是转人工的
@@ -914,8 +924,49 @@ export function trimDownstreamReason(reason, shownTarget = '', cwd = '') {
 	return kept.join('\n')
 }
 
+/**
+ * 去掉一行字段的标签（`原因：xxx` → `xxx`），用于判断两行是否在说同一件事。
+ * @param {string} line 一行文案。
+ * @returns {string} 去标签后的值（小写）。
+ */
+function fieldValueOf(line) {
+	const text = String(line ?? '').trim()
+	const match = /^[^：:\n]{1,8}[：:]\s*([\s\S]*)$/.exec(text)
+	return (match === null ? text : match[1].trim()).toLowerCase()
+}
+
+/**
+ * 丢掉「值与已输出的某一行相同」的下游字段。
+ * @param {string[]} lines 待加入的下游行。
+ * @param {string[]} parts 已经确定要输出的行。
+ * @returns {string[]} 需要保留的行。
+ */
+function dropRepeatedFields(lines, parts) {
+	const seen = new Set(parts.map((part) => fieldValueOf(part)).filter((value) => value !== ''))
+	return (Array.isArray(lines) ? lines : []).filter((line) => {
+		const value = fieldValueOf(line)
+		return value !== '' && !seen.has(value)
+	})
+}
+
 /** 已经标过序号的尾巴，用来保证重复调用不叠加。 */
 const ORDINAL_TAIL_RE = /（同一次操作的第 \d+ 个审批请求）\s*$/
+
+/**
+ * 门记下的那行命令是否只是多行脚本的第一行残句。
+ *
+ * 线上形态：`命令：$paths = @(` —— 值的结尾是明显的未完成符号，或者短得不可能说明
+ * 「这条命令在干什么」。这种行留在卡片上只会让人以为命令被截断了。
+ * @param {string} value 命令值（已去掉「命令：」前缀）。
+ * @returns {boolean} 是残句时为 true。
+ */
+function isTruncatedCommand(value) {
+	const text = String(value ?? '').trim()
+	if (text === '') return true
+	if (/[@(\[{=+]$/.test(text)) return true
+	if (/\b(?:try|if|foreach|for|while)\s*\($/.test(text)) return true
+	return text.length < 12 && !/[\\/]/.test(text)
+}
 
 /**
  * 从首行 `对 a、b、c 等 N 处 进行…` 里把已经列举出来的目标拆回来，用于下游去重。
@@ -1022,7 +1073,11 @@ export function applySummaryText(req, facts) {
 	// （目标/拦截/原因），宿主给了 `displayReason` 也不能把它挤掉。
 	if (escalation.mode === '' && justification === '') {
 		const downstream = trimDownstreamReason(rawReason, shownTargets, facts?.cwd ?? '')
-		if (shouldAppendReason(downstream, summary)) parts.push(localizeSandboxModes(downstream))
+		if (shouldAppendReason(downstream, summary)) {
+			// 门会把模型写的那句理由也记成 `原因：…`，与上面的 `理由：…` 一字不差；
+			// 同一句话出现两遍只会让卡片更长。
+			for (const line of dropRepeatedFields(downstream.split('\n'), parts)) parts.push(localizeSandboxModes(line))
+		}
 	}
 	const zh = toDisplayText(parts.join('\n'))
 	if (zh === rawZh) return ''

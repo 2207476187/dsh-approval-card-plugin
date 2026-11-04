@@ -410,3 +410,54 @@ test('结构化字段给了两个文件时，两个都进首行', () => {
 	})
 	assert.equal(head, '对 C:\\Users\\Public\\a.txt、C:\\Users\\Public\\b.txt 进行写入文件 [ 写入 ]')
 })
+
+test('门记下的命令只是一句开场白时，不要往卡片上贴', () => {
+	const req = {
+		toolName: 'pwsh',
+		reason: [
+			'操作：写入文件',
+			'路径：C:\\Windows\\Temp\\a.txt',
+			'命令：$paths = @(',
+			'原因：按你的要求造一张卡'
+		].join('\n')
+	}
+	const zh = applySummaryText(req, {
+		args: { command: "Set-Content -Path 'C:\\Windows\\Temp\\a.txt' -Value x" },
+		cwd: WORK
+	})
+	assert.ok(!zh.includes('命令：'), zh)
+	assert.ok(!zh.includes('$paths'), zh)
+})
+
+test('门把理由也记成原因时，只留一遍', () => {
+	const justification = '按你的要求造一张卡'
+	const req = {
+		toolName: 'pwsh',
+		reason: `操作：写入文件\n路径：C:\\Windows\\Temp\\a.txt\n原因：${justification}`,
+		displayReason: {
+			en: `Allow this operation with danger-full-access permissions: ${justification}`,
+			zh: `允许本次操作使用 danger-full-access 权限：${justification}`
+		}
+	}
+	const lines = applySummaryText(req, {
+		args: { command: "Set-Content -Path 'C:\\Windows\\Temp\\a.txt' -Value x" },
+		cwd: WORK
+	}).split(DISPLAY_BREAK)
+	const hits = lines.filter((line) => line.includes(justification))
+	assert.equal(hits.length, 1, lines.join(' | '))
+	assert.ok(lines.some((line) => line === `理由：${justification}`), lines.join(' | '))
+})
+
+test('脚本里的变量引用和格式串不算目标', () => {
+	const cmd = [
+		"foreach ($p in @('C:\\Windows\\Temp\\a.txt','C:\\Users\\Public\\b.txt')) {",
+		'  if (Test-Path -LiteralPath $p) { [System.IO.File]::Delete("\\\\?\\$p") }',
+		"  '{0} exists={1}' -f $p, (Test-Path -LiteralPath $p)",
+		'}'
+	].join('\n')
+	const head = buildSummaryLine({ toolName: 'pwsh', args: { command: cmd }, cwd: WORK })
+	assert.ok(head.includes('C:\\Windows\\Temp\\a.txt'), head)
+	assert.ok(head.includes('C:\\Users\\Public\\b.txt'), head)
+	assert.ok(!head.includes('$p'), head)
+	assert.ok(!head.includes('{0}'), head)
+})
