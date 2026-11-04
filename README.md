@@ -260,3 +260,26 @@ node --test test/text.test.mjs
 复核时踩到自己的 bug：第一版把「权限：」的丢弃条件写成「有影响行就丢」，于是
 `escalate` 但门没给影响行的那种卡（「权限：」是唯一说明边界的一行）整行消失 ——
 单测 32、36 直接抓到。规则改成纯内容判定后恢复。
+## 第十二轮：模式与理由还有第三个来源
+
+真机复核发现另一条腿也会断：提权请求先过审批门，门把 `req.reason` 换成自己的中文块
+（`escalate sandbox to <mode>: …` 整条消失），而处理器这时**不一定拿得到** `displayReason`。
+结果那张卡只剩首行 —— `权限：` 和 `理由：` 都没了。
+
+模式其实一直摆在工具参数里：提权请求必然来自一次带 `sandbox_permissions` 的调用。
+于是 `applySummaryText` 现在按三条路认模式，前一条走空就走下一条：
+
+1. `reason` 里的 `escalate sandbox to <mode>`；
+2. `displayReason` 里的模式名/别名（`modeFromText`）；
+3. 工具参数的 `sandbox_permissions`（`requestedModeOf`）。
+
+理由同理：`reason` 被换掉时退回 `args.justification`（那是模型自己写的那句）。
+
+```
+门换了 reason、又没有 displayReason：
+对 C:\Windows\Temp\dsh-card-a.txt、C:\Users\Public\dsh-card-b.txt、C:\tmp\dsh-card-c.txt 进行写入文件 [ 写入 ]
+权限：完全访问（整机可读写、含系统位置、不可自动回滚）
+理由：再造一张三目录的审批卡，验证裁剪后的文案。
+```
+
+单测 49 条。

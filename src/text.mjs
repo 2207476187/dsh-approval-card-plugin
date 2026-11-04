@@ -703,6 +703,22 @@ export function modeFromText(text) {
 }
 
 /**
+ * 从工具参数里认回这次请求的提权模式。
+ *
+ * 提权请求必然来自一次带 `sandbox_permissions` 的调用，所以说到底模式一直摆在那里；
+ * 只有在「门改写了 `reason`、处理器又没拿到 `displayReason`」这种两头都断的情况下，
+ * 它才是最后一条能问的路。
+ * @param {object|null} args 工具参数。
+ * @returns {string} 模式标识；参数里没有或不是已知模式时为空串。
+ */
+export function requestedModeOf(args) {
+	if (args === null || typeof args !== 'object') return ''
+	const raw = args.sandbox_permissions ?? args.sandboxPermissions
+	const value = typeof raw === 'string' ? raw.trim() : ''
+	return Object.hasOwn(MODE_SCOPE, value) ? value : ''
+}
+
+/**
  * 把宿主提权模板拆成「理由」部分。
  *
  * 模板形如 `允许本次操作使用 <mode> 权限：<模型说明>`。模式名已经由总结里的
@@ -1056,12 +1072,21 @@ export function applySummaryText(req, facts) {
 	const rawZh = hasZh ? display.zh : ''
 	const rawReason = String(req.reason ?? '')
 	const escalation = parseEscalationReason(rawReason)
+	const args = facts?.args ?? null
 	let mode = escalation.mode
-	const justification = escalation.justification
-	// 提权请求也会先过审批门：门可能已经把 `reason` 换成了它自己的中文块，
+	// 门把 reason 整条换掉时，模型写的那句理由只剩工具参数里还有。
+	const justification =
+		escalation.justification !== ''
+			? escalation.justification
+			: typeof args?.justification === 'string'
+				? args.justification.trim()
+				: ''
+	// 提权请求也会先过审批门：门可能已经把 `reason` 换成它自己的中文块，
 	// 模式标识就只剩 `displayReason` 里还有。认不出来时「权限：」整行会消失。
 	if (mode === '') mode = modeFromText([display?.zh, display?.en].filter((v) => typeof v === 'string').join(' '))
-	const args = facts?.args ?? null
+	// 最后一条路：工具参数自带 `sandbox_permissions`。提权请求一定来自一次带该参数的调用，
+	// 而门改写过 reason、处理器又拿不到 displayReason 时，这是唯一还能问出来的地方。
+	if (mode === '') mode = requestedModeOf(args)
 	// 既看不到真实操作、也解析不出提权模式：宁可不改，也不要凭空编一句。
 	if (args === null && mode === '') return ''
 	const summary = buildSummaryLine({

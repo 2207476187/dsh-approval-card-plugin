@@ -15,6 +15,7 @@ import {
 	markRepeatOrdinal,
 	modeFromText,
 	pruneRedundantFields,
+	requestedModeOf,
 	shouldAppendReason,
 	trimDownstreamReason,
 	DISPLAY_BREAK
@@ -513,4 +514,33 @@ test('只放宽到工作区可写时，权限行不能因为影响行就删掉',
 	])
 	assert.ok(out.some((line) => line.startsWith('权限：')), out.join(' | '))
 	assert.ok(out.some((line) => line.startsWith('影响：')), out.join(' | '))
+})
+
+test('门把 reason 换成短句、又没给 displayReason 时，模式和理由从工具参数取回', () => {
+	// 2026-11-04 11:52 真机：卡片只剩首行 —— 门换掉了 reason（escalate 模板没了），
+	// 处理器也没拿到 displayReason。模式一直摆在 args.sandbox_permissions 里。
+	const req = {
+		toolName: 'pwsh',
+		callId: 'c',
+		reason: '目标含工作区外路径 3 处：C:\\Windows\\Temp\\a.txt , C:\\Users\\Public\\b.txt , C:\\tmp\\c.txt'
+	}
+	const args = {
+		command:
+			"$paths = @('C:\\Windows\\Temp\\a.txt','C:\\Users\\Public\\b.txt','C:\\tmp\\c.txt')\nforeach ($p in $paths) { Set-Content -LiteralPath $p -Value x }",
+		sandbox_permissions: 'danger-full-access',
+		justification: '再造一张三目录的审批卡，验证裁剪后的文案。'
+	}
+	const zh = applySummaryText(req, { args, cwd: 'D:\\ws', env: process.env })
+	const lines = zh.split(DISPLAY_BREAK)
+	assert.ok(lines.some((line) => line.startsWith('权限：完全访问')), zh)
+	assert.ok(zh.includes('理由：再造一张三目录的审批卡'), zh)
+	assert.ok(lines[0].includes('C:\\Windows\\Temp\\a.txt') && lines[0].includes('C:\\tmp\\c.txt'), zh)
+})
+
+test('requestedModeOf 只认已知模式名', () => {
+	assert.equal(requestedModeOf({ sandbox_permissions: 'danger-full-access' }), 'danger-full-access')
+	assert.equal(requestedModeOf({ sandbox_permissions: ' workspace-write ' }), 'workspace-write')
+	assert.equal(requestedModeOf({ sandbox_permissions: 'root' }), '')
+	assert.equal(requestedModeOf({}), '')
+	assert.equal(requestedModeOf(null), '')
 })
