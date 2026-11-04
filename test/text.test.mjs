@@ -14,6 +14,7 @@ import {
 	localizeSandboxModes,
 	markRepeatOrdinal,
 	modeFromText,
+	pruneRedundantFields,
 	shouldAppendReason,
 	trimDownstreamReason,
 	DISPLAY_BREAK
@@ -460,4 +461,35 @@ test('脚本里的变量引用和格式串不算目标', () => {
 	assert.ok(head.includes('C:\\Users\\Public\\b.txt'), head)
 	assert.ok(!head.includes('$p'), head)
 	assert.ok(!head.includes('{0}'), head)
+})
+
+test('权限与影响说的是同一件事时只留影响', () => {
+	// 首行与「权限：」是同一个片段的两行，摊平后「权限：」才认得出
+	const parts = [
+		'对 C:\\Windows\\Temp\\a.txt 进行写入文件 [ 写入 ]\n权限：完全访问（整机可读写、含系统位置、不可自动回滚）',
+		'理由：造一张卡',
+		'目标：工作区外',
+		'影响：整机（工作区外任意路径可读写，含系统位置；改动不可自动回滚）'
+	]
+	const out = pruneRedundantFields(parts)
+	assert.ok(!out.some((line) => line.startsWith('权限：')), out.join(' | '))
+	assert.ok(out.some((line) => line.startsWith('影响：')), out.join(' | '))
+	assert.ok(out.some((line) => line.startsWith('理由：')), out.join(' | '))
+})
+
+test('命令行整行不要，原因与理由重复时只留理由', () => {
+	const out = pruneRedundantFields([
+		'对 C:\\tmp\\a.txt 进行写入文件 [ 写入 ]',
+		'理由：造一张卡',
+		'命令：$paths = @(',
+		'原因：造一张卡'
+	])
+	assert.deepEqual(out, ['对 C:\\tmp\\a.txt 进行写入文件 [ 写入 ]', '理由：造一张卡'])
+})
+
+test('没有影响行时权限行要留着', () => {
+	const out = pruneRedundantFields([
+		'对 C:\\tmp\\a.txt 进行写入文件 [ 写入 ]\n权限：仅工作区可写（工作区外仍被拒绝）'
+	])
+	assert.ok(out.some((line) => line.startsWith('权限：')), out.join(' | '))
 })

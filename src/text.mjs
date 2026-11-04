@@ -1018,6 +1018,27 @@ export function markRepeatOrdinal(zh, ordinal) {
  * @param {{args?: object|null, argsSource?: string, cwd?: string}} facts 调用事实（由 index.mjs 取好传进来）。
  * @returns {string} 最终写入的 `zh`；没改动时为空串。
  */
+/**
+ * 同一件事说了两遍的字段只留一遍：
+ * - `命令：`（门把多行脚本截断后剩下的开场白，首行已经写清目标）整行不要；
+ * - `原因：` 与 `理由：` 是同一句模型写的 justification，留 `理由：`；
+ * - `权限：`（沙箱模式）与 `影响：`（门算出的后果）说的是同一件事，留信息更全的 `影响：`。
+ */
+export function pruneRedundantFields(parts) {
+	// 首行与「权限：」是同一个片段里的两行（`buildSummaryLine` 一次返回两行），
+	// 按片段判断 startsWith 会漏掉第二行 —— 先摊平成行再判断。
+	const lines = parts.flatMap((part) => String(part).split('\n'))
+	const has = (label) => lines.some((line) => line.startsWith(label))
+	const hasReason = has('理由：')
+	const hasImpact = has('影响：')
+	return lines.filter((line) => {
+		if (line.startsWith('命令：')) return false
+		if (line.startsWith('原因：') && hasReason) return false
+		if (line.startsWith('权限：') && hasImpact) return false
+		return true
+	})
+}
+
 export function applySummaryText(req, facts) {
 	const display = req.displayReason
 	const hasZh = display !== null && typeof display === 'object' && typeof display.zh === 'string'
@@ -1079,7 +1100,7 @@ export function applySummaryText(req, facts) {
 			for (const line of dropRepeatedFields(downstream.split('\n'), parts)) parts.push(localizeSandboxModes(line))
 		}
 	}
-	const zh = toDisplayText(parts.join('\n'))
+	const zh = toDisplayText(pruneRedundantFields(parts).join('\n'))
 	if (zh === rawZh) return ''
 	const en = typeof display?.en === 'string' && display.en !== '' ? display.en : summary
 	req.displayReason = Object.assign({}, hasZh ? display : null, { en, zh })
