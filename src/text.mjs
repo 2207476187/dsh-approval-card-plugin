@@ -846,11 +846,15 @@ function looksLikePath(token) {
  * （`D:\DeepSeek` 之于 `D:\DeepSeek Harness工作目录\…`）。
  * 这类项不算「另一处」，但也不能当成噪声丢掉 —— 计数要留住，并注明「同上」。
  */
+function unifySlashes(text) {
+	return text.split('\\').join('/')
+}
+
 function isSameAsShown(token, context) {
-	const lower = token.toLowerCase()
+	const lower = unifySlashes(token.toLowerCase())
 	const raw = context?.shownList ?? (context?.shown === undefined ? [] : [context.shown])
 	for (const item of raw) {
-		const shown = String(item ?? '').trim().toLowerCase()
+		const shown = unifySlashes(String(item ?? '').trim().toLowerCase())
 		if (shown === '') continue
 		if (shown === lower) return true
 		if (shown.startsWith(lower) && shown.length > lower.length) return true
@@ -863,8 +867,8 @@ function isSameAsShown(token, context) {
  * 说「同上」会指错地方（上面写的是文件，不是工作目录），所以直接当噪声丢掉。
  */
 function isCwdTruncation(token, context) {
-	const lower = token.toLowerCase()
-	const cwd = String(context?.cwd ?? '').trim().toLowerCase()
+	const lower = unifySlashes(token.toLowerCase())
+	const cwd = unifySlashes(String(context?.cwd ?? '').trim().toLowerCase())
 	if (cwd === '' || cwd === lower) return false
 	return cwd.startsWith(lower) && cwd.length > lower.length
 }

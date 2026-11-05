@@ -69,7 +69,7 @@ test('回溯得到的参数要标注出来', () => {
 		toolName: 'edit',
 		mode: '',
 		justification: '改文案',
-		args: { file_path: 'C:\\Users\\tester\\.dsh\\profiles\\desktop\\cordis.patch.yml' },
+		args: { file_path: 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml' },
 		argsSource: 'lastSameTool'
 	})
 	assert.ok(line.endsWith('（回溯最近同名调用）'))
@@ -98,11 +98,11 @@ test('宿主提权模板：补目标行，模板只留模型理由', () => {
 test('审批门转人工（没有 displayReason）：也要给出精确目标，并保留它的理由', () => {
 	const req = { toolName: 'edit', callId: 'c2', reason: '目标含工作区外路径 1 处：C:\\Windows\\Temp' }
 	const zh = applySummaryText(req, {
-		args: { file_path: 'C:\\Users\\tester\\.dsh\\profiles\\desktop\\cordis.patch.yml' },
+		args: { file_path: 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml' },
 		argsSource: 'callId'
 	})
 	const lines = zh.split(DISPLAY_BREAK)
-	assert.equal(lines[0], '对 C:\\Users\\tester\\.dsh\\profiles\\desktop\\cordis.patch.yml 进行修改文件 [ 修改 ]')
+	assert.equal(lines[0], '对 C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\cordis.patch.yml 进行修改文件 [ 修改 ]')
 	assert.equal(lines[1], '目标含工作区外路径 1 处：C:\\Windows\\Temp')
 	assert.equal(req.displayReason.zh, zh)
 	assert.ok(typeof req.displayReason.en === 'string' && req.displayReason.en !== '')
@@ -153,13 +153,13 @@ test('URL 与文件路径并存时两者都能取到', () => {
 })
 
 test('环境变量展开：$env: / ${env:} / %VAR%', () => {
-	const env = { DSH_HOME: 'C:\\Users\\tester\\.dsh' }
+	const env = { DSH_HOME: 'C:\\Users\\Administrator\\.dsh' }
 	assert.equal(
 		expandEnvVars('$env:DSH_HOME\\profiles\\a.yml', env),
-		'C:\\Users\\tester\\.dsh\\profiles\\a.yml'
+		'C:\\Users\\Administrator\\.dsh\\profiles\\a.yml'
 	)
-	assert.equal(expandEnvVars('${env:DSH_HOME}/x', env), 'C:\\Users\\tester\\.dsh/x')
-	assert.equal(expandEnvVars('%DSH_HOME%\\y', env), 'C:\\Users\\tester\\.dsh\\y')
+	assert.equal(expandEnvVars('${env:DSH_HOME}/x', env), 'C:\\Users\\Administrator\\.dsh/x')
+	assert.equal(expandEnvVars('%DSH_HOME%\\y', env), 'C:\\Users\\Administrator\\.dsh\\y')
 	// 取不到值就原样保留，不编造。
 	assert.equal(expandEnvVars('$env:NOT_SET\\z', env), '$env:NOT_SET\\z')
 })
@@ -257,13 +257,13 @@ test('URL 与本地文件同时出现时，目标取本地文件', () => {
 })
 
 test('审批门把反斜杠再转义一层时，卡片上还原成单反斜杠', () => {
-	const reason = '目标含工作区外路径 1 处：C:\\\\Users\\\\tester\\\\.dsh\\\\x'
+	const reason = '目标含工作区外路径 1 处：C:\\\\Users\\\\Administrator\\\\.dsh\\\\x'
 	const trimmed = trimDownstreamReason(reason, `${WORK}\\a.mjs`, WORK)
-	assert.equal(trimmed, '目标含工作区外路径 1 处：C:\\Users\\tester\\.dsh\\x')
+	assert.equal(trimmed, '目标含工作区外路径 1 处：C:\\Users\\Administrator\\.dsh\\x')
 })
 
 test('门列的目标就是首行那个时，明说「就是上面那个」而不是留一个裸的 N 处', () => {
-	const shown = 'C:\\Users\\tester\\AppData\\Local\\Temp\\x.txt'
+	const shown = 'C:\\Users\\Administrator\\AppData\\Local\\Temp\\x.txt'
 	const trimmed = trimDownstreamReason(`目标含工作区外路径 1 处：${shown}`, shown, WORK)
 	assert.equal(trimmed, '目标含工作区外路径 1 处（就是上面那个）')
 })
@@ -550,16 +550,16 @@ test('第一张卡（门先问一次）也要有权限、理由、目标、影�
 	// 但 tool/call 事件在第一次审批之前就已写入会话（实测索引 42 < 43），
 	// 所以工具参数里的 sandbox_permissions / justification 这时也拿得到。
 	const args = {
-		file_path: 'C:\\Users\\tester\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
+		file_path: 'C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
 		sandbox_permissions: 'danger-full-access',
 		justification: '给插件打点定位短路径问题。'
 	}
 	const reason = [
 		'操作：修改',
-		'路径：C:\\Users\\tester\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
+		'路径：C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs',
 		'目标：工作区外',
 		'影响：整机（工作区外任意路径可读写，含系统位置；改动不可自动回滚）',
-		'原因：目标含工作区外路径 1 处：C:\\Users\\tester\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs'
+		'原因：目标含工作区外路径 1 处：C:\\Users\\Administrator\\.dsh\\profiles\\desktop\\plugins\\x\\index.mjs'
 	].join('\n')
 	const zh = applySummaryText({ toolName: 'edit', callId: 'c', reason }, { args, cwd: 'D:\\ws', env: process.env })
 	const lines = zh.split(DISPLAY_BREAK)
@@ -646,4 +646,18 @@ test('命令里的 // 注释不算目标', () => {
 	const zh = applySummaryText({ toolName: 'pwsh', reason: '目标含工作区外路径 2 处：D:\\ws\\src\\text.mjs , D:\\ws\\test\\text.test.mjs' }, { args: { command }, cwd: 'D:\\ws' })
 	assert.ok(!zh.includes('looksLikeCode'), zh)
 	assert.ok(zh.includes('D:\\ws\\src\\text.mjs'), zh)
+})
+test('审批门把同一路径写成正斜杠时仍认得出是残片', () => {
+	// 真机 18:07:45：门报「目标含工作区外路径 2 处：C:/Users/…/dsh-usage-cost , D:/DeepSeek」，
+	// 其中 D:/DeepSeek 是工作区路径被空白截断的残片，只因为用了正斜杠就漏过了比较。
+	const reason = '目标含工作区外路径 2 处：C:/Users/tester/.dsh/profiles/desktop/plugins/dsh-usage-cost , D:/DeepSeek'
+	const zh = applySummaryText(
+		{ toolName: 'write', reason },
+		{
+			args: { file_path: 'D:\\DeepSeek Harness工作目录\\DeepSeek\\probes\\tmp-wrapup.mjs' },
+			cwd: 'D:\\DeepSeek Harness工作目录\\DeepSeek'
+		}
+	)
+	assert.ok(!zh.includes('D:/DeepSeek'), zh)
+	assert.ok(!zh.includes('D:\\DeepSeek ,'), zh)
 })
