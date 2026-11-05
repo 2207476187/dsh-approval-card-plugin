@@ -41,10 +41,10 @@
 
 它是 profile 的正式 bundle（这样才会出现在「已安装插件」列表里，并被启用/停用开关管理）：
 
-1. `C:\Users\Administrator\.dsh\profiles\desktop\package.json`
+1. `C:\Users\<user>\.dsh\profiles\desktop\package.json`
    - `dependencies` 加 `"dsh-approval-card": "file:plugins/dsh-approval-card"`
    - `dsh.profile.bundles` 里加 `"dsh-approval-card"`
-2. `C:\Users\Administrator\.dsh\profiles\desktop\node_modules\dsh-approval-card`
+2. `C:\Users\<user>\.dsh\profiles\desktop\node_modules\dsh-approval-card`
    → 指向 `plugins\dsh-approval-card` 的 junction（包名要能从 profile 解析出来）
 3. 本包的 `cordis.patch.yml` 用**裸包名**插入自己：`name: 'dsh-approval-card'`
    （相对路径会相对 profile 目录解析，指不到 `src/`）
